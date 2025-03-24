@@ -1,11 +1,7 @@
 # Ignore build directory
 /build/
-/output/
-/bin/
-/obj/
-/csv_output/*
-!csv_output/.gitkeep
-
+/output/*
+!output/
 # Ignore object files
 *.o
 *.obj
