@@ -10,13 +10,6 @@
 #include <vector>
 #include <csignal>
 #include <atomic>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-
-#include <cpprest/http_client.h>
-#include <cpprest/uri_builder.h>
-#include <cpprest/json.h>
 
 #include "FibAlgoTrader.hpp"
 #include "HelperFunctions.hpp"
@@ -119,6 +112,9 @@ int main() {
     // Set input and output directories
     std::string inputDirectory = "./input";
     std::string outputDirectory = "./output";
+
+    // Make sure the output directory exists, otherwise no result file can be written
+    std::filesystem::create_directories(outputDirectory);
 
     // Get the list of symbols from the input directory
     auto symbols = HelperFunctions::get_symbols_from_directory(inputDirectory);

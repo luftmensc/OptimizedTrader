@@ -12,6 +12,17 @@ detect_os() {
     echo $OS
 }
 
+# Program to run: backtest (default) or example. The other arguments are given to the program,
+# for example: ./buildrun.sh backtest --symbols BTCUSDT --risk 0.02
+TARGET="${1:-backtest}"
+if [ $# -gt 0 ]; then
+    shift
+fi
+if [ "$TARGET" != "backtest" ] && [ "$TARGET" != "example" ]; then
+    echo "Usage: ./buildrun.sh [backtest|example] [program arguments]"
+    exit 1
+fi
+
 # Detect the operating system
 OS=$(detect_os)
 echo "Detected OS: $OS"
@@ -45,9 +56,9 @@ fi
 
 # Set the executable name based on the operating system
 if [ "$OS" == "Linux" ] || [ "$OS" == "Mac" ]; then
-    EXECUTABLE="./bin/example"
+    EXECUTABLE="./bin/$TARGET"
 elif [ "$OS" == "MinGw" ] || [ "$OS" == "Cygwin" ]; then
-    EXECUTABLE="./bin/example.exe"
+    EXECUTABLE="./bin/$TARGET.exe"
 else
     echo "Unsupported OS. Exiting."
     exit 1
@@ -63,7 +74,7 @@ cd ..
 
 # Run the executable
 echo "Running the executable..."
-$BUILD_DIR/bin/example
+$BUILD_DIR/bin/$TARGET "$@"
 
 # Check if the executable ran successfully
 if [ $? -ne 0 ]; then

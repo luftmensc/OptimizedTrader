@@ -1,0 +1,27 @@
+# systemd service of the paper trader. Installed by deploy/install_service.sh,
+# which replaces __USER__ and __DIRECTORY__.
+[Unit]
+Description=OptimizedTrader paper trading
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIRECTORY__
+ExecStart=/usr/bin/python3 scripts/paper_trader.py run
+Restart=always
+RestartSec=30
+# The stop signal is only for the main program, a running cycle is finished
+KillMode=mixed
+TimeoutStopSec=60
+
+# Limits, so that the other programs of the server are never disturbed:
+# lowest priority, at most half of one CPU core and 600 MB of memory.
+Nice=15
+CPUQuota=50%
+MemoryMax=600M
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

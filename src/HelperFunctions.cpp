@@ -39,15 +39,10 @@ namespace HelperFunctions {
         std::vector<std::string> symbols;
         for (const auto &entry : fs::directory_iterator(directory_path))
         {
-            if (entry.is_regular_file())
+            // Only csv files are symbols; the symbol is the file name without the ".csv" suffix
+            if (entry.is_regular_file() && entry.path().extension() == ".csv")
             {
-                std::string file_name = entry.path().filename().string();
-                // Remove the ".csv" suffix (assumes all files end with ".csv")
-                if (file_name.size() > 4)
-                {
-                    std::string symbol = file_name.substr(0, file_name.size() - 4);
-                    symbols.push_back(symbol);
-                }
+                symbols.push_back(entry.path().stem().string());
             }
         }
         return symbols;

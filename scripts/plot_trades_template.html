@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--TITLE--></title>
+<style>
+  :root {
+    --background: #131722;
+    --panel: #1c2030;
+    --border: #2a2e39;
+    --text: #d1d4dc;
+    --muted: #868c9c;
+    --green: #26a69a;
+    --red: #ef5350;
+    --blue: #4c8dff;
+    --orange: #f0b90b;
+    --purple: #b07cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--background); color: var(--text);
+    font: 13px/1.4 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+    padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header h1 span { color: var(--muted); font-weight: normal; font-size: 12px; margin-left: 6px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+  button, select {
+    background: var(--background); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  label.toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); cursor: pointer; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #chartArea { flex: 1; position: relative; min-width: 0; }
+  #chart { position: absolute; inset: 0; }
+  #legend {
+    position: absolute; top: 8px; left: 12px; z-index: 5; pointer-events: none;
+    font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  #legend b { color: var(--text); font-weight: 500; }
+  #lineLegend {
+    position: absolute; top: 30px; left: 12px; z-index: 5; pointer-events: none;
+    display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px;
+  }
+  #lineLegend i { display: inline-block; width: 18px; border-top: 2px solid; vertical-align: middle; margin-right: 4px; }
+  aside {
+    width: 370px; display: flex; flex-direction: column; min-height: 0;
+    border-left: 1px solid var(--border); background: var(--panel);
+  }
+  #details { padding: 10px 14px; border-bottom: 1px solid var(--border); min-height: 210px; }
+  #details h2 { font-size: 14px; margin: 0 0 6px; }
+  #details table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #details td { padding: 1px 0; }
+  #details td:first-child { color: var(--muted); }
+  #details td:last-child { text-align: right; }
+  .hint { color: var(--muted); }
+  .listHead { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--border); }
+  .listHead span { color: var(--muted); margin-left: auto; }
+  #list { flex: 1; overflow-y: auto; }
+  #list table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #list th {
+    position: sticky; top: 0; background: var(--panel); color: var(--muted);
+    font-weight: normal; text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border);
+  }
+  #list td { padding: 3px 6px; text-align: right; border-bottom: 1px solid #222634; white-space: nowrap; }
+  #list th:nth-child(-n+3), #list td:nth-child(-n+3) { text-align: left; }
+  #list tr { cursor: pointer; }
+  #list tbody tr:hover { background: #252a3b; }
+  #list tr.selected { background: #2b3350; }
+  .long { color: var(--green); }
+  .short { color: var(--red); }
+  .win { color: var(--green); }
+  .loss { color: var(--red); }
+  @media (max-width: 900px) {
+    main { flex-direction: column; }
+    aside { width: 100%; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
+    #details { min-height: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="stats" id="stats"></div>
+  <div class="controls">
+    <span id="timeframes"></span>
+    <label class="toggle"><input type="checkbox" id="showLevels" checked> Trade lines</label>
+    <label class="toggle"><input type="checkbox" id="showEma" checked> <span id="emaLabel">EMA</span></label>
+    <button id="previous" title="Previous trade (left arrow key)">&#9664; Prev</button>
+    <button id="next" title="Next trade (right arrow key)">Next &#9654;</button>
+    <button id="all" title="Show the whole period">All</button>
+  </div>
+</header>
+<main>
+  <div id="chartArea">
+    <div id="chart"></div>
+    <div id="legend"></div>
+    <div id="lineLegend">
+      <span><i style="border-color: var(--blue); border-top-style: dashed"></i>Entry price</span>
+      <span><i style="border-color: var(--red)"></i>Stop loss</span>
+      <span id="takeProfitLegend"><i style="border-color: var(--green)"></i>Take profit</span>
+      <span><i style="border-color: var(--purple); border-top-style: dotted"></i>Broken channel level</span>
+      <span><i style="border-color: var(--muted); border-top-style: dashed"></i>Entry &rarr; exit</span>
+    </div>
+  </div>
+  <aside>
+    <div id="details"></div>
+    <div class="listHead">
+      <select id="filter">
+        <option value="all">All trades</option>
+        <option value="long">Long</option>
+        <option value="short">Short</option>
+        <option value="win">Winners</option>
+        <option value="loss">Losers</option>
+      </select>
+      <span id="listCount"></span>
+    </div>
+    <div id="list"></div>
+  </aside>
+</main>
+
+<!--LIBRARY-->
+<script>
+const DATA = /*DATA*/null;
+const LC = window.LightweightCharts;
+
+const COLORS = {
+  green: '#26a69a', red: '#ef5350', blue: '#4c8dff', orange: '#f0b90b', purple: '#b07cff', muted: '#868c9c',
+};
+
+// ---------- Helpers ----------
+function formatTime(time) {
+  return new Date(time * 1000).toISOString().slice(0, 16).replace('T', ' ');
+}
+
+const firstPrice = DATA.bars[String(DATA.timeframes[0])][0][1];
+const PRECISION = firstPrice >= 1000 ? 1 : firstPrice >= 100 ? 2 : firstPrice >= 1 ? 3 : 5;
+
+function formatPrice(value) {
+  return value.toLocaleString('en-US', { minimumFractionDigits: PRECISION, maximumFractionDigits: PRECISION });
+}
+
+function formatNumber(value, decimals) {
+  return value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function signed(value, decimals) {
+  return (value >= 0 ? '+' : '') + formatNumber(value, decimals);
+}
+
+function percent(value, decimals) {
+  return formatNumber(value * 100, decimals) + '%';
+}
+
+function timeframeName(minutes) {
+  if (minutes % 1440 === 0) return (minutes / 1440) + 'd';
+  if (minutes % 60 === 0) return (minutes / 60) + 'h';
+  return minutes + 'm';
+}
+
+function duration(seconds) {
+  const hours = seconds / 3600;
+  if (hours < 1) return Math.round(seconds / 60) + ' min';
+  if (hours < 48) return formatNumber(hours, 1) + ' hours';
+  return formatNumber(hours / 24, 1) + ' days';
+}
+
+// ---------- Chart ----------
+const chart = LC.createChart(document.getElementById('chart'), {
+  autoSize: true,
+  layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+  grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+  crosshair: { mode: LC.CrosshairMode.Normal },
+  rightPriceScale: { borderColor: '#2a2e39' },
+  timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false, rightOffset: 4 },
+});
+
+const priceFormat = { type: 'price', precision: PRECISION, minMove: Math.pow(10, -PRECISION) };
+
+const candleSeries = chart.addCandlestickSeries({
+  upColor: COLORS.green, downColor: COLORS.red, borderVisible: false,
+  wickUpColor: COLORS.green, wickDownColor: COLORS.red, priceFormat: priceFormat,
+});
+
+function addLine(options) {
+  return chart.addLineSeries(Object.assign({
+    lineWidth: 1, priceFormat: priceFormat,
+    lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+    // The lines of the trades must not change the zoom of the price axis
+    autoscaleInfoProvider: () => null,
+  }, options));
+}
+
+const emaSeries = addLine({ color: COLORS.orange });
+
+// Lines of every trade
+const trades = DATA.trades;
+trades.forEach((trade, index) => {
+  trade.index = index;
+  trade.isLong = trade.side === 'Long';
+  // The stop and the take profit of the selected trade are always inside of the price axis
+  const inside = { autoscaleInfoProvider: original => (trade.index === selected ? original() : null) };
+  trade.series = {
+    level: trade.level ? addLine({ color: COLORS.purple, lineStyle: LC.LineStyle.Dotted }) : null,
+    entry: addLine({ color: COLORS.blue, lineStyle: LC.LineStyle.Dashed }),
+    stop: addLine(Object.assign({ color: COLORS.red, lineType: LC.LineType.WithSteps }, inside)),
+    takeProfit: trade.takeProfit > 0 ? addLine(Object.assign({ color: COLORS.green }, inside)) : null,
+    path: addLine({
+      color: trade.net > 0 ? COLORS.green : COLORS.red, lineStyle: LC.LineStyle.Dashed,
+      pointMarkersVisible: true, pointMarkersRadius: 3,
+    }),
+  };
+});
+if (!trades.some(trade => trade.takeProfit > 0)) {
+  document.getElementById('takeProfitLegend').style.display = 'none';
+}
+
+let minutes = DATA.strategyMinutes;
+let bars = [];
+let selected = -1;
+let showText = null;
+
+function seconds() { return minutes * 60; }
+function snap(time) { return Math.floor(time / seconds()) * seconds(); }
+function firstTime() { return bars[0].time; }
+function lastTime() { return bars[bars.length - 1].time; }
+function clamp(time) { return Math.min(Math.max(snap(time), firstTime()), lastTime()); }
+
+// Points [time, value] to the data of a line: times on the bars of the chart, increasing, inside of the chart
+function lineData(points) {
+  const data = [];
+  for (const point of points) {
+    const time = snap(point[0]);
+    if (time < firstTime() || time > lastTime()) continue;
+    if (data.length > 0 && data[data.length - 1].time === time) data[data.length - 1].value = point[1];
+    else if (data.length === 0 || time > data[data.length - 1].time) data.push({ time: time, value: point[1] });
+  }
+  return data;
+}
+
+// End of the lines of a trade. A trade inside of one bar gets one more bar, otherwise nothing can be drawn.
+function endOfTrade(trade) {
+  return snap(trade.exitTime) > snap(trade.entryTime) ? trade.exitTime : snap(trade.entryTime) + seconds();
+}
+
+function drawTrade(trade) {
+  const visible = document.getElementById('showLevels').checked;
+  const end = endOfTrade(trade);
+  const series = trade.series;
+  const width = trade.index === selected ? 2 : 1;
+
+  const stops = trade.stops.length > 0 ? trade.stops.slice() : [[trade.entryTime, trade.initialStop]];
+  stops.push([end, stops[stops.length - 1][1]]);
+
+  series.entry.setData(visible ? lineData([[trade.entryTime, trade.entryPrice], [end, trade.entryPrice]]) : []);
+  series.stop.setData(visible ? lineData(stops) : []);
+  series.path.setData(visible ? lineData([[trade.entryTime, trade.entryPrice], [end, trade.exitPrice]]) : []);
+  if (series.takeProfit) {
+    series.takeProfit.setData(visible ? lineData([[trade.entryTime, trade.takeProfit], [end, trade.takeProfit]]) : []);
+    series.takeProfit.applyOptions({ lineWidth: width });
+  }
+  if (series.level) {
+    // The channel ends with the close of the signal bar, which is the time of the entry
+    const levelEnd = Math.max(trade.entryTime, snap(trade.level.from) + seconds());
+    series.level.setData(visible ? lineData([[trade.level.from, trade.level.price], [levelEnd, trade.level.price]]) : []);
+    series.level.applyOptions({ lineWidth: width });
+  }
+  series.entry.applyOptions({ lineWidth: width });
+  series.stop.applyOptions({ lineWidth: width });
+  series.path.applyOptions({ lineWidth: width });
+}
+
+function tradesInRange(from, to) {
+  return trades.filter(trade => snap(trade.exitTime) >= from && snap(trade.entryTime) <= to);
+}
+
+function drawMarkers() {
+  const markers = [];
+  for (const trade of trades) {
+    const number = '#' + (trade.index + 1);
+    const entry = snap(trade.entryTime);
+    const exit = snap(trade.exitTime);
+    if (entry >= firstTime() && entry <= lastTime()) {
+      markers.push({
+        time: entry,
+        position: trade.isLong ? 'belowBar' : 'aboveBar',
+        shape: trade.isLong ? 'arrowUp' : 'arrowDown',
+        color: trade.isLong ? COLORS.green : COLORS.red,
+        size: trade.index === selected ? 2 : 1,
+        text: showText ? (trade.isLong ? 'Buy ' : 'Sell ') + number : '',
+      });
+    }
+    if (exit >= firstTime() && exit <= lastTime()) {
+      markers.push({
+        time: exit,
+        position: trade.isLong ? 'aboveBar' : 'belowBar',
+        // A position which is still open has a circle on the last bar
+        shape: trade.reason === 'Open' ? 'circle' : 'square',
+        color: trade.net > 0 ? COLORS.green : COLORS.red,
+        size: trade.index === selected ? 2 : 1,
+        text: showText ? (trade.reason === 'Open' ? 'Open ' : 'Exit ') + number + ' ' + signed(trade.r, 2) + 'R' : '',
+      });
+    }
+  }
+  markers.sort((a, b) => a.time - b.time);
+  candleSeries.setMarkers(markers);
+}
+
+// The texts of the markers are only shown when there is enough space
+function updateMarkerText() {
+  const range = chart.timeScale().getVisibleRange();
+  if (!range) return;
+  const text = tradesInRange(range.from, range.to).length <= 14;
+  if (text !== showText) {
+    showText = text;
+    drawMarkers();
+  }
+}
+
+function setVisibleRange(from, to) {
+  from = clamp(from);
+  to = clamp(to);
+  if (to <= from) to = Math.min(from + seconds() * 10, lastTime());
+  if (to > from) chart.timeScale().setVisibleRange({ from: from, to: to });
+}
+
+function setTimeframe(value, keepRange) {
+  const range = keepRange ? chart.timeScale().getVisibleRange() : null;
+  minutes = value;
+  bars = DATA.bars[String(minutes)].map(bar => ({ time: bar[0], open: bar[1], high: bar[2], low: bar[3], close: bar[4] }));
+
+  candleSeries.setData(bars);
+  drawEma();
+  trades.forEach(drawTrade);
+  showText = showText === null ? false : showText;
+  drawMarkers();
+
+  document.querySelectorAll('#timeframes button').forEach(button => {
+    button.classList.toggle('active', Number(button.dataset.minutes) === minutes);
+  });
+
+  if (range) setVisibleRange(range.from, range.to);
+  else chart.timeScale().fitContent();
+  updateMarkerText();
+}
+
+function drawEma() {
+  const visible = document.getElementById('showEma').checked && DATA.ema.length > 0;
+  // The value of a bar of the strategy is known at its close: it is drawn on the last bar of the chart inside of it
+  const shift = DATA.strategyMinutes * 60 - 60;
+  emaSeries.setData(visible ? lineData(DATA.ema.map(point => [point[0] + shift, point[1]])) : []);
+}
+
+// ---------- Selection ----------
+function selectTrade(index, zoom) {
+  const previous = selected;
+  selected = index;
+  if (previous >= 0) drawTrade(trades[previous]);
+  if (selected >= 0) drawTrade(trades[selected]);
+  drawMarkers();
+  showDetails();
+
+  document.querySelectorAll('#list tbody tr').forEach(row => {
+    const isSelected = Number(row.dataset.index) === selected;
+    row.classList.toggle('selected', isSelected);
+    if (isSelected) row.scrollIntoView({ block: 'nearest' });
+  });
+
+  if (zoom && selected >= 0) {
+    // The trade is in the middle, with the bars before it which made the signal
+    const trade = trades[selected];
+    const space = Math.max((trade.exitTime - trade.entryTime) * 0.6, seconds() * 40);
+    setVisibleRange(trade.entryTime - space, trade.exitTime + space);
+    updateMarkerText();
+  }
+}
+
+function row(name, value, className) {
+  return '<tr><td>' + name + '</td><td' + (className ? ' class="' + className + '"' : '') + '>' + value + '</td></tr>';
+}
+
+function showDetails() {
+  const element = document.getElementById('details');
+  if (selected < 0) {
+    element.innerHTML = '<h2>Trade details</h2><p class="hint">Click on a trade in the chart or in the list. ' +
+      'Left and right arrow keys go to the previous and next trade.</p>' +
+      '<p class="hint">Arrow = entry, square = exit. Mouse wheel = zoom, drag = move.</p>';
+    return;
+  }
+  const trade = trades[selected];
+  const result = trade.net > 0 ? 'win' : 'loss';
+  const lastStop = trade.stops.length > 0 ? trade.stops[trade.stops.length - 1][1] : trade.initialStop;
+  const stopDistance = Math.abs(trade.entryPrice - trade.initialStop);
+
+  let html = '<h2>Trade #' + (trade.index + 1) + ' &middot; <span class="' + (trade.isLong ? 'long' : 'short') + '">' +
+    trade.side + '</span> &middot; <span class="' + result + '">' + signed(trade.r, 2) + ' R</span></h2><table>';
+  html += row('Entry', formatTime(trade.entryTime) + ' @ ' + formatPrice(trade.entryPrice));
+  if (trade.reason === 'Open') {
+    html += row('Exit', 'still open, last price ' + formatPrice(trade.exitPrice));
+  } else {
+    html += row('Exit', formatTime(trade.exitTime) + ' @ ' + formatPrice(trade.exitPrice));
+    html += row('Exit reason', trade.reason);
+  }
+  html += row('Held', duration(trade.exitTime - trade.entryTime));
+  html += row('Initial stop loss', formatPrice(trade.initialStop) + ' (' + percent(stopDistance / trade.entryPrice, 2) + ')');
+  if (lastStop !== trade.initialStop) {
+    html += row('Last stop loss', formatPrice(lastStop) + ' (' + (trade.stops.length - 1) + ' moves)');
+  }
+  html += row('Take profit', trade.takeProfit > 0 ? formatPrice(trade.takeProfit) : 'none (trailing stop)');
+  if (trade.level) html += row('Broken level', formatPrice(trade.level.price));
+  html += row('Parameters', 'channel ' + trade.channel + ', stop ' + trade.stopValue +
+    (DATA.config.stop_mode === 'atr' ? ' ATR' : ''));
+  html += row('Quantity', formatNumber(trade.quantity, 5) + ' (' + formatNumber(trade.quantity * trade.entryPrice, 0) + ' USDT)');
+  html += row('Gross / fees / funding', signed(trade.gross, 2) + ' / ' + signed(-trade.fees, 2) + ' / ' + signed(trade.funding, 2));
+  html += row('Net profit', signed(trade.net, 2) + ' USDT (' + signed(trade.return * 100, 2) + '%)', result);
+  html += '</table>';
+  element.innerHTML = html;
+}
+
+function filteredTrades() {
+  const filter = document.getElementById('filter').value;
+  return trades.filter(trade =>
+    filter === 'all' ||
+    (filter === 'long' && trade.isLong) || (filter === 'short' && !trade.isLong) ||
+    (filter === 'win' && trade.net > 0) || (filter === 'loss' && trade.net <= 0));
+}
+
+function buildList() {
+  const list = filteredTrades();
+  let html = '<table><thead><tr><th>#</th><th>Side</th><th>Entry</th><th>R</th><th>Net</th><th>Exit</th></tr></thead><tbody>';
+  let net = 0;
+  for (const trade of list) {
+    net += trade.net;
+    const result = trade.net > 0 ? 'win' : 'loss';
+    html += '<tr data-index="' + trade.index + '"' + (trade.index === selected ? ' class="selected"' : '') + '>' +
+      '<td>' + (trade.index + 1) + '</td>' +
+      '<td class="' + (trade.isLong ? 'long' : 'short') + '">' + trade.side + '</td>' +
+      '<td>' + formatTime(trade.entryTime).slice(2) + '</td>' +
+      '<td class="' + result + '">' + signed(trade.r, 2) + '</td>' +
+      '<td class="' + result + '">' + signed(trade.net, 1) + '</td>' +
+      '<td>' + trade.reason.replace('TrailingStop', 'Trail').replace('StopLoss', 'Stop')
+                           .replace('TakeProfit', 'Target').replace('ExitChannel', 'Channel')
+                           .replace('TimeStop', 'Time').replace('EndOfData', 'End') + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('list').innerHTML = html;
+  document.getElementById('listCount').textContent = list.length + ' trades, net ' + signed(net, 1);
+
+  document.querySelectorAll('#list tbody tr').forEach(element => {
+    element.addEventListener('click', () => selectTrade(Number(element.dataset.index), true));
+  });
+}
+
+function step(direction) {
+  const list = filteredTrades();
+  if (list.length === 0) return;
+  let position = list.findIndex(trade => trade.index === selected);
+  if (position < 0) {
+    // Nothing is selected: start with the first trade of the visible part
+    const range = chart.timeScale().getVisibleRange();
+    position = range ? list.findIndex(trade => trade.exitTime >= range.from) : 0;
+    if (position < 0) position = 0;
+  } else {
+    position = Math.min(Math.max(position + direction, 0), list.length - 1);
+  }
+  selectTrade(list[position].index, true);
+}
+
+// ---------- Page ----------
+const report = DATA.report;
+document.getElementById('title').innerHTML = DATA.symbol + '<span>' + DATA.tag + ' &middot; ' +
+  DATA.period.start.slice(0, 10) + ' &rarr; ' + DATA.period.end.slice(0, 10) + ' (UTC)</span>';
+document.getElementById('stats').innerHTML =
+  '<span>Trades <b>' + report.trades + '</b></span>' +
+  '<span>Win rate <b>' + percent(report.win_rate, 1) + '</b></span>' +
+  '<span>Return <b class="' + (report.total_return > 0 ? 'win' : 'loss') + '">' + signed(report.total_return * 100, 1) + '%</b></span>' +
+  '<span>Profit factor <b>' + formatNumber(report.profit_factor, 2) + '</b></span>' +
+  '<span>Sharpe <b>' + formatNumber(report.sharpe, 2) + '</b></span>' +
+  '<span>Sortino <b>' + formatNumber(report.sortino, 2) + '</b></span>' +
+  '<span>Max drawdown <b>' + percent(report.max_drawdown, 1) + '</b></span>';
+document.getElementById('emaLabel').textContent =
+  'EMA ' + DATA.config.trend_ema_length + ' (' + timeframeName(DATA.strategyMinutes) + ')';
+if (DATA.ema.length === 0) document.getElementById('showEma').parentElement.style.display = 'none';
+
+document.getElementById('timeframes').innerHTML = DATA.timeframes.map(value =>
+  '<button data-minutes="' + value + '">' + timeframeName(value) + '</button>').join(' ');
+document.querySelectorAll('#timeframes button').forEach(button => {
+  button.addEventListener('click', () => setTimeframe(Number(button.dataset.minutes), true));
+});
+
+document.getElementById('showLevels').addEventListener('change', () => trades.forEach(drawTrade));
+document.getElementById('showEma').addEventListener('change', drawEma);
+document.getElementById('previous').addEventListener('click', () => step(-1));
+document.getElementById('next').addEventListener('click', () => step(1));
+document.getElementById('all').addEventListener('click', () => { chart.timeScale().fitContent(); updateMarkerText(); });
+document.getElementById('filter').addEventListener('change', buildList);
+document.addEventListener('keydown', event => {
+  if (event.target.tagName === 'SELECT' || event.target.tagName === 'INPUT') return;
+  if (event.key === 'ArrowLeft') { step(-1); event.preventDefault(); }
+  if (event.key === 'ArrowRight') { step(1); event.preventDefault(); }
+});
+
+const legend = document.getElementById('legend');
+function showLegend(bar) {
+  if (!bar) { legend.innerHTML = ''; return; }
+  const change = (bar.close - bar.open) / bar.open;
+  legend.innerHTML = formatTime(bar.time) + ' &nbsp; O <b>' + formatPrice(bar.open) + '</b> H <b>' + formatPrice(bar.high) +
+    '</b> L <b>' + formatPrice(bar.low) + '</b> C <b>' + formatPrice(bar.close) + '</b> <span class="' +
+    (change >= 0 ? 'win' : 'loss') + '">' + signed(change * 100, 2) + '%</span>';
+}
+chart.subscribeCrosshairMove(param => {
+  const bar = param.time !== undefined ? param.seriesData.get(candleSeries) : null;
+  showLegend(bar || bars[bars.length - 1]);
+});
+
+chart.subscribeClick(param => {
+  if (param.time === undefined) return;
+  const found = tradesInRange(param.time, param.time);
+  if (found.length === 0) return;
+  // More than one trade on the bar: every click takes the next one
+  const position = found.findIndex(trade => trade.index === selected);
+  selectTrade(found[(position + 1) % found.length].index, false);
+});
+
+let rangeTimer = null;
+chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+  clearTimeout(rangeTimer);
+  rangeTimer = setTimeout(updateMarkerText, 80);
+});
+
+buildList();
+showDetails();
+setTimeframe(DATA.strategyMinutes, false);
+showLegend(bars[bars.length - 1]);
+</script>
+</body>
+</html>

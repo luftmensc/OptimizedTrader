@@ -2,6 +2,11 @@
 /build/
 /output/*
 !output/
+# Ignore the paper trading data and results (see scripts/paper_trader.py)
+/paper/
+# Ignore downloaded market data (see scripts/binance_fetch.py), keep the sample
+/input/*
+!/input/ALGOUSDT.csv
 # Ignore object files
 *.o
 *.obj

@@ -17,25 +17,30 @@ include_directories(include)
 # Set the source directory
 set(SRCDIR ${CMAKE_SOURCE_DIR}/src)
 
-file(GLOB SOURCES "${SRCDIR}/*.cpp")
+# Original example: rolling optimization without trading costs
+add_executable(example
+    ${SRCDIR}/example.cpp
+    ${SRCDIR}/FibAlgoTrader.cpp
+    ${SRCDIR}/HelperFunctions.cpp
+)
 
-# Add the executable
-add_executable(example ${SOURCES})
+# Walk forward backtest with trading costs and performance report
+add_executable(backtest
+    ${SRCDIR}/backtest.cpp
+    ${SRCDIR}/BreakoutStrategy.cpp
+    ${SRCDIR}/MarketData.cpp
+    ${SRCDIR}/Performance.cpp
+    ${SRCDIR}/WalkForward.cpp
+)
 
-# Specify the output directory for the executable
-set_target_properties(example PROPERTIES
+# Specify the output directory for the executables
+set_target_properties(example backtest PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
 # Link required libraries
-target_link_libraries(example PRIVATE
-    pthread
-    cpprest
-    ssl
-    crypto
-    boost_system
-    boost_thread
-)
+target_link_libraries(example PRIVATE pthread)
+target_link_libraries(backtest PRIVATE pthread)
 
 # Set optimization level for Release builds
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
