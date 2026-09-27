@@ -1,95 +1,241 @@
-from binance.client import Client
-import pandas as pd
-from datetime import datetime, timedelta
+"""
+Fetch historical 1 minute candles (and funding rates) of Binance USDT-M perpetual futures.
+
+Only public endpoints are used, so no API key is needed. Only the standard library of Python is used.
+
+Usage (from the repository root):
+    python3 scripts/binance_fetch.py                                  # BTC, ETH, SOL, BNB - last 730 days
+    python3 scripts/binance_fetch.py --symbols BTCUSDT --days 30
+    python3 scripts/binance_fetch.py --update                         # append new candles to existing files
+
+Output:
+    input/<SYMBOL>.csv            Open time,Open,High,Low,Close,Volume   (UTC, one row per minute, no gaps)
+    input/funding/<SYMBOL>.csv    Funding time,Funding rate              (UTC)
+"""
+import argparse
 import concurrent.futures
+import csv
+import json
+import os
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 
-def fetch_and_save_klines(symbol, interval, days, api_key, api_secret, output_file, multiply=False):
-    # Connect to Binance Futures
-    client = Client(api_key, api_secret)
+BASE_URL = "https://fapi.binance.com"
+INTERVAL_MS = 60 * 1000
+KLINES_LIMIT = 1000          # 1000 candles cost 5 weight, the cheapest per candle
+FUNDING_LIMIT = 1000
+WEIGHT_LIMIT_PER_MINUTE = 2400
+WEIGHT_SAFETY_THRESHOLD = int(WEIGHT_LIMIT_PER_MINUTE * 0.75)
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-    # Calculate the start and end time for the data
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=days)
+throttle_lock = threading.Lock()
+resume_time = 0.0  # No thread sends a request before this time
 
-    all_klines = []  # List to accumulate data
 
-    # Convert times to milliseconds
-    start_ts = int(start_time.timestamp() * 1000)
-    end_ts = int(end_time.timestamp() * 1000)
+def pause_requests(seconds):
+    global resume_time
+    with throttle_lock:
+        resume_time = max(resume_time, time.time() + seconds)
 
-    # Define the interval in milliseconds
-    interval_ms_dict = {
-        Client.KLINE_INTERVAL_1MINUTE: 60 * 1000,
-    }
-    interval_ms = interval_ms_dict.get(interval, 60 * 1000)
 
-    # Fetch data in batches
-    while start_ts < end_ts:
-        limit = 1000
-        klines = client.futures_klines(
-            symbol=symbol,
-            interval=interval,
-            startTime=start_ts,
-            limit=limit
-        )
+def wait_for_permission():
+    while True:
+        with throttle_lock:
+            wait = resume_time - time.time()
+        if wait <= 0:
+            return
+        time.sleep(wait)
 
-        if not klines:
-            break  # No more data available
 
-        all_klines.extend(klines)
-        last_kline_open_time = klines[-1][0]
-        start_ts = last_kline_open_time + interval_ms
+def format_ts(ts_ms):
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(TIME_FORMAT)
 
-        time.sleep(0.1)  # Pause to avoid rate limiting
 
-    # Define DataFrame columns as returned by Binance
-    columns = ['Open time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close time',
-               'Quote asset volume', 'Number of trades', 'Taker buy base asset volume',
-               'Taker buy quote asset volume', 'Ignore']
+def parse_ts(text):
+    return int(datetime.strptime(text, TIME_FORMAT).replace(tzinfo=timezone.utc).timestamp() * 1000)
 
-    # Create DataFrame and convert timestamps
-    df = pd.DataFrame(all_klines, columns=columns)
-    df['Open time'] = pd.to_datetime(df['Open time'], unit='ms')
-    df['Close time'] = pd.to_datetime(df['Close time'], unit='ms')
 
-    # Select only the 'Open time', 'High', 'Low', and 'Close' columns
-    df_filtered = df[['Open time', 'Open', 'High', 'Low', 'Close']].copy()
+def get(path, params, retries=8):
+    """GET with retries, which also respects the request weight limit shared by all threads."""
+    for attempt in range(retries):
+        wait_for_permission()
+        url = BASE_URL + path + "?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                body = response.read()
+                headers = response.headers
+        except urllib.error.HTTPError as error:
+            if error.code in (418, 429):
+                # Too many requests
+                pause_requests(int(error.headers.get("Retry-After", 60)))
+                continue
+            if error.code >= 500:
+                time.sleep(min(2 ** attempt, 30))
+                continue
+            raise RuntimeError(f"Request failed with {error.code}: {path} {params} {error.read()[:200]}")
+        except (urllib.error.URLError, OSError) as error:
+            # No connection
+            time.sleep(min(2 ** attempt, 30))
+            continue
 
-    # If multiply is True, multiply 'Close' by 1000 (adjust as needed)
-    if multiply:
-        df_filtered['Close'] = df_filtered['Close'].astype(float) * 1000
+        used_weight = int(headers.get("x-mbx-used-weight-1m", 0))
+        if used_weight > WEIGHT_SAFETY_THRESHOLD:
+            # The weight counter resets at the start of each minute
+            pause_requests(60 - time.time() % 60 + 1)
+        return json.loads(body)
+    raise RuntimeError(f"Request failed after {retries} retries: {path} {params}")
 
-    # Ensure 'Close' is float and round to 5 decimal places
-    df_filtered['Close'] = df_filtered['Close'].astype(float).round(5)
 
-    # Save the DataFrame to a CSV file
-    df_filtered.to_csv(output_file, index=False, float_format='%.5f')
-    print(f"Data saved to {output_file}")
+def read_last_row(path):
+    """Returns (open time in ms, close) of the last complete row of an existing candle file, or None.
 
-# Example usage
-API_KEY = 'your_api_key'
-API_SECRET = 'your_api_secret'
-days = 5
+    The last row is removed from the file, because it can be incomplete after an interrupted
+    download. It is fetched again.
+    """
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb+") as file:
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        tail_start = max(0, size - 4096)
+        file.seek(tail_start)
+        tail = file.read()
+        lines = tail.split(b"\n")
+        # lines[-1] is empty if the file ends with a line break, lines[-2] is the last row
+        if len(lines) < 4:
+            return None
+        removed = len(lines[-1]) + len(lines[-2]) + 1
+        file.truncate(size - removed)
+        last_row = lines[-3].decode().split(",")
+    return parse_ts(last_row[0]), last_row[4]
 
-# Define the coin symbols you want to fetch
-coin_symbols = ["ETHUSDT"]
 
-# Create tasks for parallel execution
-tasks = [
-    (
-        symbol,
-        Client.KLINE_INTERVAL_1MINUTE,
-        days,
-        API_KEY,
-        API_SECRET,
-        f'../input/{symbol}.csv',
-        False  # Set to True if you want to multiply the 'Close' values by 1000
-    )
-    for symbol in coin_symbols
-]
+def fetch_klines(symbol, start_ms, end_ms, output_file, append, previous_close=None, quiet=False):
+    """Fetches closed candles with open time in [start_ms, end_ms) and writes them without gaps.
 
-# Run tasks in parallel
-with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-    futures = [executor.submit(fetch_and_save_klines, *task) for task in tasks]
-    concurrent.futures.wait(futures)
+    previous_close is the close of the candle before start_ms, it is used if the first candles are missing.
+    Returns the number of the written rows.
+    """
+    total_rows = 0
+    filled_rows = 0
+    expected_ts = start_ms
+
+    with open(output_file, "a" if append else "w", newline="") as file:
+        writer = csv.writer(file)
+        if not append:
+            writer.writerow(["Open time", "Open", "High", "Low", "Close", "Volume"])
+
+        cursor = start_ms
+        while cursor < end_ms:
+            klines = get("/fapi/v1/klines", {
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": cursor,
+                "endTime": end_ms - 1,
+                "limit": KLINES_LIMIT,
+            })
+            if not klines:
+                break
+
+            for kline in klines:
+                open_time = int(kline[0])
+                if open_time < expected_ts:
+                    continue  # Duplicate candle
+                # Fill the minutes the exchange did not report (outage) with flat candles
+                while expected_ts < open_time and previous_close is not None:
+                    writer.writerow([format_ts(expected_ts), previous_close, previous_close,
+                                     previous_close, previous_close, "0"])
+                    expected_ts += INTERVAL_MS
+                    total_rows += 1
+                    filled_rows += 1
+                writer.writerow([format_ts(open_time), kline[1], kline[2], kline[3], kline[4], kline[5]])
+                previous_close = kline[4]
+                expected_ts = open_time + INTERVAL_MS
+                total_rows += 1
+
+            cursor = int(klines[-1][0]) + INTERVAL_MS
+
+    if not quiet:
+        print(f"{symbol}: {total_rows} candles written to {output_file} "
+              f"({filled_rows} missing minutes filled)")
+    return total_rows
+
+
+def fetch_funding(symbol, start_ms, end_ms, output_file, quiet=False):
+    rows = []
+    cursor = start_ms
+    while cursor < end_ms:
+        funding = get("/fapi/v1/fundingRate", {
+            "symbol": symbol,
+            "startTime": cursor,
+            "endTime": end_ms,
+            "limit": FUNDING_LIMIT,
+        })
+        if not funding:
+            break
+        rows.extend(funding)
+        cursor = int(funding[-1]["fundingTime"]) + 1
+        if len(funding) < FUNDING_LIMIT:
+            break
+
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    # The file is replaced with one step, a reader never sees a half written file
+    with open(output_file + ".tmp", "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Funding time", "Funding rate"])
+        for row in rows:
+            writer.writerow([format_ts(int(row["fundingTime"])), row["fundingRate"]])
+    os.replace(output_file + ".tmp", output_file)
+    if not quiet:
+        print(f"{symbol}: {len(rows)} funding rates written to {output_file}")
+    return len(rows)
+
+
+def fetch_symbol(symbol, days, output_dir, update):
+    # Only closed candles: the end is the start of the current minute
+    end_ms = int(time.time() * 1000) // INTERVAL_MS * INTERVAL_MS
+    start_ms = end_ms - days * 24 * 60 * INTERVAL_MS
+
+    candle_file = os.path.join(output_dir, f"{symbol}.csv")
+    funding_file = os.path.join(output_dir, "funding", f"{symbol}.csv")
+
+    append = False
+    previous_close = None
+    if update:
+        last_row = read_last_row(candle_file)
+        if last_row is not None:
+            start_ms = last_row[0] + INTERVAL_MS
+            previous_close = last_row[1]
+            append = True
+
+    fetch_klines(symbol, start_ms, end_ms, candle_file, append, previous_close)
+    # Funding history is small, so it is always fetched for the whole period
+    fetch_funding(symbol, end_ms - days * 24 * 60 * INTERVAL_MS, end_ms, funding_file)
+
+
+def main():
+    repository_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    parser = argparse.ArgumentParser(description="Fetch Binance USDT-M futures 1m candles and funding rates.")
+    parser.add_argument("--symbols", nargs="+", default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"])
+    parser.add_argument("--days", type=int, default=730)
+    parser.add_argument("--output-dir", default=os.path.join(repository_root, "input"))
+    parser.add_argument("--update", action="store_true",
+                        help="Append the candles after the last row of the existing files")
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(fetch_symbol, symbol, args.days, args.output_dir, args.update)
+                   for symbol in args.symbols]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()  # Raise the exceptions of the worker threads
+
+
+if __name__ == "__main__":
+    main()

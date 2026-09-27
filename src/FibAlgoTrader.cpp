@@ -18,19 +18,32 @@ std::vector<DataRow> FibAlgoTrader::readCSV(const std::string &filename)
 
     while (std::getline(file, line))
     {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back(); // Handle CRLF line endings
+        if (line.empty())
+            continue;
+
         std::stringstream ss(line);
         DataRow row;
         std::string temp;
 
-        std::getline(ss, row.open_time, ',');
-        std::getline(ss, temp, ',');
-        row.open = std::stof(temp);
-        std::getline(ss, temp, ',');
-        row.high = std::stof(temp);
-        std::getline(ss, temp, ',');
-        row.low = std::stof(temp);
-        std::getline(ss, temp, ',');
-        row.close = std::stof(temp);
+        try
+        {
+            std::getline(ss, row.open_time, ',');
+            std::getline(ss, temp, ',');
+            row.open = std::stof(temp);
+            std::getline(ss, temp, ',');
+            row.high = std::stof(temp);
+            std::getline(ss, temp, ',');
+            row.low = std::stof(temp);
+            std::getline(ss, temp, ',');
+            row.close = std::stof(temp);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Warning: Skipping malformed CSV line: " << line << std::endl;
+            continue;
+        }
 
         data.push_back(row);
     }
@@ -107,6 +120,18 @@ ResultHighBroke FibAlgoTrader::optimizeParameters(const std::vector<DataRow> &da
         if (res.best_win_rate > bestResult.best_win_rate)
             bestResult = res;
     }
+
+    // No combination won a single trade: fall back to the one with the highest balance
+    // so that the caller never receives the default (sensitivity = 0, tpsl = 0) parameters.
+    if (bestResult.best_sensitivity == 0 && !localResults.empty())
+    {
+        bestResult = localResults.front();
+        for (const auto &res : localResults)
+        {
+            if (res.best_balance > bestResult.best_balance)
+                bestResult = res;
+        }
+    }
     return bestResult;
 }
 
@@ -119,7 +144,7 @@ TradeSimulationResult FibAlgoTrader::simulateTradesOptimizing(TradeSimulationPar
     float nextAmount = params.initial_trade_size;
     size_t tradesMade = 0;
     size_t i = params.start_index;
-    const int waitCounterConst = 5;
+    const int waitCounterConst = m_WaitCounter;
     int localWaitCounter = waitCounterConst;
 
     for (; i < dataSize && tradesMade < params.max_trades; ++i)
@@ -236,7 +261,7 @@ TradeSimulationResult FibAlgoTrader::simulateTradesApplying(TradeSimulationParam
     float nextAmount = params.initial_trade_size;
     size_t tradesMade = 0;
     size_t i = params.start_index;
-    const int waitCounterConst = 5;
+    const int waitCounterConst = m_WaitCounter;
     int localWaitCounter = waitCounterConst;
     float returned_balance = params.first_balance;
 
@@ -360,8 +385,15 @@ OptimizationResult FibAlgoTrader::performRollingWindowOptimization(const Optimiz
         return {1000.0f, 1000.0f, 1000.0f, 0, 0, 0};
     }
 
+    if (params.sensitivity_values.empty() || params.tpsl_values.empty())
+    {
+        std::cerr << "Error: Sensitivity and TPSL value lists must not be empty." << std::endl;
+        return {1000.0f, 1000.0f, 1000.0f, 0, 0, 0};
+    }
+
     constexpr size_t MINUTES_PER_DAY = 24 * 60;
-    int maxSensitivity = params.sensitivity_values.back();
+    int maxSensitivity = *std::max_element(params.sensitivity_values.begin(),
+                                           params.sensitivity_values.end());
     size_t lookbackSize = params.lookback_days * MINUTES_PER_DAY + maxSensitivity;
 
     float overallBalance = 1000.0f;
@@ -380,6 +412,13 @@ OptimizationResult FibAlgoTrader::performRollingWindowOptimization(const Optimiz
                               std::to_string(params.lookback_days) + "ld_" +
                               std::to_string(params.apply_trades) + "at_" +
                               HelperFunctions::getFormattedDate() + ".csv";
+
+    // Start from an empty log so a rerun within the same minute does not append duplicate rows.
+    {
+        std::ofstream logFile(logFileName, std::ios::out | std::ios::trunc);
+        if (!logFile.is_open())
+            std::cerr << "Warning: Could not open log file: " << logFileName << std::endl;
+    }
 
     while (startIndex < allData.size())
     {
@@ -424,6 +463,9 @@ OptimizationResult FibAlgoTrader::performRollingWindowOptimization(const Optimiz
         overallLosses += applyLosses;
         overallTrades += (applyWins + applyLosses);
         nextAmount = result.updated_next_amount;
+        totalTradeVolume = tradedVolume;
+        // Balance after paying commission on the traded volume
+        overallReducedBalance = overallBalance - totalTradeVolume * params.commission_per_trade;
 
         // Update startIndex using the number of full-data candles processed
         startIndex += (result.last_index - bestResult.best_sensitivity);
